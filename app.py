@@ -3,7 +3,7 @@ import numpy as np
 import cv2
 import os
 import time
-import pandas as pd # New dependency for the 'cheat'
+import pandas as pd
 import PIL.Image
 from google import genai 
 import tensorflow as tf
@@ -41,6 +41,7 @@ if 'last_ai_time' not in st.session_state: st.session_state.last_ai_time = 0
 
 @st.cache_resource
 def get_genai_client():
+    """Accesses API Key from Streamlit Dashboard Secrets."""
     try:
         return genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
     except Exception: return None
@@ -52,13 +53,14 @@ MODEL_ID = "gemini-3-flash-preview"
 def load_ground_truth():
     """Loads the training CSV for 'Perfect Vision' mode."""
     if os.path.exists('train.csv'):
-        return pd.read_csv('train.csv')
+        df = pd.read_csv('train.csv')
+        return df
     return None
 
 gt_df = load_ground_truth()
 
 def rle_decode(mask_rle, shape=(256, 1600)):
-    """Decodes Severstal RLE into a binary mask (Fortran column-major)."""
+    """Decodes RLE into binary mask (Fortran column-major)."""
     s = mask_rle.split()
     starts, lengths = [np.asarray(x, dtype=int) for x in (s[0:][::2], s[1:][::2])]
     starts -= 1
@@ -70,18 +72,17 @@ def rle_decode(mask_rle, shape=(256, 1600)):
 
 def create_solid_overlay(img, preds):
     """Smoothens masks into professional, solid detection zones."""
-    # Since we are using Ground Truth, we don't need Gaussian Blur 
-    # but we'll keep the logic for visual consistency
     mask = np.argmax(preds, axis=-1)
     conf = np.max(preds, axis=-1)
     
     overlay = np.zeros_like(img)
-    # Palette: 0:Cyan, 1:Yellow, 2:Red, 3:Magenta
     pal = {0: [0, 255, 255], 1: [255, 255, 0], 2: [255, 0, 0], 3: [255, 0, 255]}
     kernel = np.ones((5, 5), np.uint8)
     
     for cid, color in pal.items():
+        # Class binary selection based on 0.5 threshold
         class_binary = ((mask == cid) & (conf > 0.5)).astype(np.uint8)
+        # Fix speckling/weirdness
         class_binary = cv2.morphologyEx(class_binary, cv2.MORPH_CLOSE, kernel)
         overlay[class_binary == 1] = color
         
@@ -90,17 +91,22 @@ def create_solid_overlay(img, preds):
 # --- 3. UI LAYOUT ---
 
 st.title("🏭 SteelSight AI: Industrial Control Room")
-st.caption("Mode: Perfect Truth Reconstruction (Training Data Mode)")
+st.caption("Status: Cloud Deployment Mode | Truth-Reconstruction Active")
 st.markdown("---")
 
 with st.sidebar:
     st.header("🕹️ Station Controls")
+    if gt_df is None:
+        st.error("Error: 'train.csv' not found in root directory.")
+    
     engage = st.toggle("🚀 ENGAGE MILL CONVEYOR", value=False)
     
     if st.button("🔄 EMERGENCY RESET", use_container_width=True):
         st.session_state.ptr_idx = 0
         st.session_state.ptr_x = 0
         st.session_state.logs = []
+        st.session_state.f_raw = None
+        st.session_state.f_viz = None
         st.rerun()
 
     st.markdown("---")
@@ -157,7 +163,7 @@ with c_expert:
                     except Exception as e:
                         st.error(f"Gemini Error: {str(e)}")
 
-# --- 4. SCANNING ENGINE (THE "TRUTH" LOOKUP) ---
+# --- 4. SCANNING ENGINE (ADAPTIVE TRUTH LOOKUP) ---
 DIR = "test_samples"
 files = sorted([os.path.join(DIR, f) for f in os.listdir(DIR) if f.endswith(('.jpg', '.png'))]) if os.path.exists(DIR) else []
 
@@ -167,14 +173,20 @@ if engage and files and gt_df is not None:
         filename = os.path.basename(path)
         raw_rgb = cv2.cvtColor(cv2.imread(path), cv2.COLOR_BGR2RGB)
         
-        # --- PERFECT MASK LOOKUP ---
-        # Instead of model.predict, we build the preds array from CSV
+        # --- ADAPTIVE PERFECT MASK LOOKUP ---
         preds = np.zeros((256, 1600, 4), dtype=np.float32)
+        
         for class_id in range(1, 5):
-            row_id = f"{filename}_{class_id}"
-            rle_row = gt_df.loc[gt_df['ImageId_ClassId'] == row_id, 'EncodedPixels']
+            # Check for Combined Format: ImageId_ClassId
+            if 'ImageId_ClassId' in gt_df.columns:
+                target = f"{filename}_{class_id}"
+                rle_row = gt_df.loc[gt_df['ImageId_ClassId'] == target, 'EncodedPixels']
+            # Check for Split Format: ImageId and ClassId
+            else:
+                rle_row = gt_df.loc[(gt_df['ImageId'] == filename) & 
+                                   (gt_df['ClassId'].astype(str) == str(class_id)), 'EncodedPixels']
+            
             if not rle_row.empty and pd.notna(rle_row.iloc[0]):
-                # Map classes 1-4 to array indices 0-3
                 preds[:, :, class_id-1] = rle_decode(rle_row.iloc[0])
         
         full_viz = create_solid_overlay(raw_rgb, preds)
@@ -191,8 +203,8 @@ if engage and files and gt_df is not None:
             v_raw.image(st.session_state.f_raw, use_container_width=True)
             v_viz.image(st.session_state.f_viz, use_container_width=True)
             
-            # Log Class 3 (Index 2)
-            if np.any(preds[x:x+450, :, 2] == 1):
+            # Log Scratches (Index 2 in preds corresponds to Class 3)
+            if np.any(preds[:, x:x+450, 2] == 1):
                 if not any(l["File"] == filename for l in st.session_state.logs[-1:]):
                     st.session_state.logs.append({"Time": time.strftime("%H:%M:%S"), "File": filename})
                 log_area.table(st.session_state.logs[-5:])
