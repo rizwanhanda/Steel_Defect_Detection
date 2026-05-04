@@ -9,67 +9,74 @@ from google.api_core import exceptions
 import tensorflow as tf
 import keras
 
-# --- 1. INDUSTRIAL THEME & UI POLISH ---
+# --- 1. SYSTEM CONFIG & INDUSTRIAL THEME ---
 st.set_page_config(page_title="SteelSight AI | Industrial Dashboard", layout="wide")
 
+# Custom CSS for Large Controls and Professional Appearance
 st.markdown("""
     <style>
-    /* Bigger, Pro-Level Toggle */
-    .stCheckbox { transform: scale(1.5); margin-left: 25px; margin-top: 10px; }
-    .stApp { background-color: #0E1117; color: #FFFFFF; }
+    /* Make Toggle Switch Huge */
+    .stCheckbox { transform: scale(1.6); margin-left: 30px; margin-top: 15px; }
+    .stApp { background-color: #0E1117; color: #E0E0E0; }
     
-    /* Highlight the Analysis Result */
-    .expert-response { 
+    /* Industrial Viewport Containers */
+    .viewport-box { 
+        border: 2px solid #30363d; 
+        border-radius: 12px; 
         background-color: #161b22; 
-        border-left: 5px solid #238636; 
-        padding: 15px; 
-        border-radius: 0 5px 5px 0;
-        margin-top: 10px;
+        padding: 10px;
     }
     
-    .stButton>button { 
-        height: 3.5em; 
-        font-weight: bold; 
-        background-color: #238636; 
-        color: white;
+    /* Expert Analysis Box */
+    .expert-box {
+        background-color: #1c2128;
+        border-left: 6px solid #238636;
+        padding: 20px;
+        border-radius: 4px;
+        font-size: 16px;
+        line-height: 1.6;
     }
+    
+    .stButton>button { height: 4em; font-weight: bold; font-size: 1.1em; }
     </style>
     """, unsafe_allow_html=True)
 
-# State Persistence
+# Persistent State Management
 if 'ptr_idx' not in st.session_state: st.session_state.ptr_idx = 0
 if 'ptr_x' not in st.session_state: st.session_state.ptr_x = 0
 if 'logs' not in st.session_state: st.session_state.logs = []
 if 'f_raw' not in st.session_state: st.session_state.f_raw = None
 if 'f_viz' not in st.session_state: st.session_state.f_viz = None
-if 'last_gemini_call' not in st.session_state: st.session_state.last_gemini_call = 0
+if 'last_call' not in st.session_state: st.session_state.last_call = 0
 
-# --- 2. FOOLPROOF GEMINI INITIALIZATION ---
+# --- 2. FOOLPROOF GEMINI DISCOVERY ---
 
 @st.cache_resource
-def get_gemini_model():
+def init_gemini():
+    """Dynamically finds the correct model ID to solve 404 errors."""
     try:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-        # Use standard flash model to avoid 404/v1beta errors
-        return genai.GenerativeModel('gemini-1.5-flash')
+        # Fetch all models supported for generation
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # Priority: standard flash -> latest flash -> any flash -> first available
+        target = "gemini-1.5-flash"
+        # Check if the API wants the 'models/' prefix or not based on discovery
+        best_match = next((m for m in available_models if target in m), available_models[0])
+        
+        return genai.GenerativeModel(best_match)
     except Exception as e:
-        st.sidebar.error(f"Gemini Init Error: {str(e)}")
+        st.sidebar.error(f"Gemini Discovery Error: {str(e)}")
         return None
 
-gemini_model = get_gemini_model()
+gemini_model = init_gemini()
 
-# --- 3. AI MODEL LOADER ---
-
-def dice_coef(y_true, y_pred, smooth=1):
-    y_true_f = tf.keras.backend.flatten(y_true)
-    y_pred_f = tf.keras.backend.flatten(y_pred)
-    intersection = tf.keras.backend.sum(y_true_f * y_pred_f)
-    return (2. * intersection + smooth) / (tf.keras.backend.sum(y_true_f) + tf.keras.backend.sum(y_pred_f) + smooth)
+# --- 3. AI BACKBONE (U-Net) ---
 
 @st.cache_resource
 def load_mill_model():
     custom_objects = {
-        'dice_coef': dice_coef,
+        'dice_coef': lambda y_t, y_p: 1.0, 
         'Functional': keras.models.Model,
         'silu': tf.nn.silu,
         'focal_loss_fixed': lambda y_t, y_p: 0.0
@@ -78,17 +85,18 @@ def load_mill_model():
 
 model = load_mill_model()
 
-# --- 4. CONTROL PANEL ---
+# --- 4. MAIN INTERFACE ---
 
 st.title("🏭 SteelSight AI: Industrial Control Room")
-st.caption("Precision Surface Monitoring | Mill Line 01 | TIET Patiala")
+st.caption("Mill Line 01 | Precision Surface Inspection | TIET Patiala")
 st.markdown("---")
 
 with st.sidebar:
     st.header("🕹️ Station Controls")
-    engage = st.toggle("🚀 ENGAGE MILL LINE", value=False)
+    # Big Sticky Toggle
+    engage = st.toggle("🚀 ENGAGE MILL CONVEYOR", value=False)
     
-    if st.button("🔄 EMERGENCY RESET"):
+    if st.button("🔄 EMERGENCY RESET", use_container_width=True):
         st.session_state.ptr_idx = 0
         st.session_state.ptr_x = 0
         st.session_state.logs = []
@@ -97,56 +105,55 @@ with st.sidebar:
         st.rerun()
 
     st.markdown("---")
-    line_step = st.select_slider("Conveyor Speed (Step Size)", options=[5, 10, 20, 30, 40], value=10)
+    step = st.select_slider("Mill Speed (Step Size)", options=[5, 10, 15, 20, 30, 40], value=10)
     
     status_clr = "#28a745" if engage else "#dc3545"
-    st.markdown(f"Status: <b style='color:{status_clr};'>{'RUNNING' if engage else 'HALTED'}</b>", unsafe_allow_html=True)
+    st.markdown(f"**Line Status:** <span style='color:{status_clr};'>{ 'RUNNING' if engage else 'HALTED'}</span>", unsafe_allow_html=True)
 
-# Layout Containers
-col_a, col_b = st.columns(2)
-with col_a:
-    st.markdown("#### 📷 Optical Sensor (Raw)")
+# Layout: Synced Viewports
+col_left, col_right = st.columns(2)
+with col_left:
+    st.markdown("#### 📷 Optical Sensor: Raw Surface")
     v_raw = st.empty()
-with col_b:
-    st.markdown("#### 🔬 AI Vision (Heatmap)")
+with col_right:
+    st.markdown("#### 🔬 AI Vision: Defect Segmentation")
     v_viz = st.empty()
 
-# Persistent Display: Keeps image on screen when HALTED
+# Persistent Frame Display: Ensures images stay during HALT
 if not engage and st.session_state.f_raw is not None:
     v_raw.image(st.session_state.f_raw, use_container_width=True)
     v_viz.image(st.session_state.f_viz, use_container_width=True)
 
+# Diagnostics Row
 st.markdown("---")
-col_log, col_expert = st.columns([1, 2])
+c_log, c_expert = st.columns([1, 2])
 
-with col_log:
+with c_log:
     st.subheader("📋 Detection Events")
-    log_box = st.empty()
+    log_area = st.empty()
     if st.session_state.logs:
-        log_box.table(st.session_state.logs[-5:])
+        log_area.table(st.session_state.logs[-5:])
 
-with col_expert:
-    st.subheader("🤖 AI Expert Root Cause Analysis")
+with c_expert:
+    st.subheader("🤖 AI Expert: Root Cause Analysis")
     
-    # Rate Limit Logic: Prevent button spam
-    current_time = time.time()
-    cooldown = 60 - (current_time - st.session_state.last_gemini_call)
-    
+    # Cooldown Logic to prevent 429 Quota Exceeded errors
+    cooldown = 60 - (time.time() - st.session_state.last_call)
     if cooldown > 0:
-        st.warning(f"AI Expert cooling down. Please wait {int(cooldown)}s before next analysis.")
+        st.warning(f"System cooling down. Please wait {int(cooldown)}s before next AI analysis.")
         st.button("✨ ANALYZE CURRENT DEFECT", disabled=True)
     else:
         if st.button("✨ ANALYZE CURRENT DEFECT", use_container_width=True):
             if st.session_state.f_raw is not None and gemini_model:
-                st.session_state.last_gemini_call = time.time()
-                with st.spinner("Analyzing steel surface topology..."):
+                st.session_state.last_call = time.time()
+                with st.spinner("Consulting Metallurgical Specialist..."):
                     try:
                         img_pil = PIL.Image.fromarray(st.session_state.f_raw)
-                        prompt = "Act as an industrial metallurgy expert. Identify defects in this steel slice and suggest a machinery fix."
+                        prompt = "Act as a Senior Metallurgy Engineer. Analyze this steel surface for defects. Identify class and machine fix."
                         response = gemini_model.generate_content([prompt, img_pil])
-                        st.markdown(f"<div class='expert-response'>{response.text}</div>", unsafe_allow_html=True)
+                        st.markdown(f"<div class='expert-box'>{response.text}</div>", unsafe_allow_html=True)
                     except exceptions.ResourceExhausted:
-                        st.error("Quota Exceeded: You are on the Gemini Free Tier (15 RPM). Please wait 60 seconds and try again.")
+                        st.error("Quota reached. Wait 60s.")
                     except Exception as e:
                         st.error(f"Analysis Failed: {str(e)}")
             else:
@@ -157,11 +164,12 @@ with col_expert:
 DIR = "test_samples"
 files = sorted([os.path.join(DIR, f) for f in os.listdir(DIR) if f.endswith(('.jpg', '.png'))]) if os.path.exists(DIR) else []
 
-def build_overlay(img, preds):
+def get_overlay(img, preds):
+    """Syncs segmentation with industrial colors."""
     mask = np.argmax(preds, axis=-1)
     conf = np.max(preds, axis=-1)
     overlay = np.zeros_like(img)
-    # Palette: 1:Cyan, 2:Yellow, 3:Red, 4:Magenta
+    # 0:Cyan, 1:Yellow, 2:Red, 3:Magenta
     palette = {0: [0, 255, 255], 1: [255, 255, 0], 2: [255, 0, 0], 3: [255, 0, 255]}
     for cid, color in palette.items():
         overlay[(mask == cid) & (conf > 0.5)] = color
@@ -173,34 +181,35 @@ if engage and files:
         raw_bgr = cv2.imread(path)
         raw_rgb = cv2.cvtColor(raw_bgr, cv2.COLOR_BGR2RGB)
         
-        # Inference
-        input_tensor = cv2.resize(raw_rgb, (1600, 256))
-        input_tensor = np.expand_dims(input_tensor, axis=0).astype(np.float32)
-        preds = model.predict(input_tensor, verbose=0)[0]
-        full_viz = build_overlay(raw_rgb, preds)
+        # Inference (Model handles internal rescaling)
+        inp = cv2.resize(raw_rgb, (1600, 256))
+        inp = np.expand_dims(inp, axis=0).astype(np.float32)
+        preds = model.predict(inp, verbose=0)[0]
+        full_viz = get_overlay(raw_rgb, preds)
         
-        # Sliding Window Loop
-        for x in range(st.session_state.ptr_x, 1200, line_step):
+        # Slicing Window Loop
+        for x in range(st.session_state.ptr_x, 1150, step):
             if not engage:
-                st.session_state.ptr_x = x
+                st.session_state.ptr_x = x # Save precise stop point
                 st.rerun()
 
             st.session_state.f_raw = raw_rgb[:, x : x + 450]
             st.session_state.f_viz = full_viz[:, x : x + 450]
             
-            # Atomic Sync Render
+            # Atomic UI update: Updates both views in one browser repaint
             v_raw.image(st.session_state.f_raw, use_container_width=True)
             v_viz.image(st.session_state.f_viz, use_container_width=True)
             
-            # Critical Defect Log (Class 3)
+            # Logging Logic for Class 3 (Red Scratches)
             if np.any((np.argmax(preds[:, x:x+450], axis=-1) == 2) & (np.max(preds[:, x:x+450], axis=-1) > 0.6)):
                 entry = {"Time": time.strftime("%H:%M:%S"), "File": os.path.basename(path)}
                 if not any(l["File"] == entry["File"] for l in st.session_state.logs[-1:]):
                     st.session_state.logs.append(entry)
-                log_box.table(st.session_state.logs[-5:])
+                log_area.table(st.session_state.logs[-5:])
             
             time.sleep(0.01)
 
+        # Iterate to next strip
         st.session_state.ptr_idx = (st.session_state.ptr_idx + 1) % len(files)
         st.session_state.ptr_x = 0
     st.rerun()
