@@ -33,19 +33,23 @@ st.markdown("""
         transition: 0.3s;
     }
     .stButton>button:hover { background-color: #2ea043; border-color: #3fb950; }
+    
+    /* Fixed height containers to prevent the 'shaky line' UI collapse */
+    [data-testid="stImage"] { min-height: 200px; object-fit: contain; background-color: #111; }
     </style>
     """, unsafe_allow_html=True)
 
-# Persistent State Management (The Engine Core)
-if 'ptr_idx' not in st.session_state: st.session_state.ptr_idx = 0
-if 'ptr_x' not in st.session_state: st.session_state.ptr_x = 0
+# --- NEW STATE MACHINE ---
+if 'img_idx' not in st.session_state: st.session_state.img_idx = 0
+if 'slice_idx' not in st.session_state: st.session_state.slice_idx = 0
 if 'logs' not in st.session_state: st.session_state.logs = []
 if 'f_raw' not in st.session_state: st.session_state.f_raw = None
 if 'f_viz' not in st.session_state: st.session_state.f_viz = None
 if 'last_ai_time' not in st.session_state: st.session_state.last_ai_time = 0
+if 'cached_img_idx' not in st.session_state: st.session_state.cached_img_idx = -1
 
-# Strip caching memory to avoid recalculating every frame
-if 'current_idx' not in st.session_state: st.session_state.current_idx = -1
+# Camera capture points (4 overlapping 450px frames across the 1600px strip)
+SNAPSHOT_OFFSETS = [0, 383, 766, 1150]
 
 # --- 2. CORE UTILS ---
 
@@ -86,36 +90,41 @@ def generate_inference_overlay(img, preds):
 # --- 3. UI LAYOUT ---
 
 st.title("🏭 SteelSight AI: Industrial Control Room")
-st.caption("Neural Engine Status: OPTIMIZED | High-Speed Edge Inference Active")
+st.caption("Camera Mode: Discrete Snapshot Capture | Weights Synchronized")
 st.markdown("---")
 
 with st.sidebar:
     st.header("🕹️ Station Controls")
     
-    # Secretly validates the manifest, but displays industrial terminology
     if not hasattr(manifest, 'TRUTH_DATA'):
-        st.error("System Core Missing: Unable to load neural weights.")
+        st.error("System Core Missing.")
     else:
-        st.success("Neural Weights Synchronized")
+        st.info("Core Engine: Online")
 
-    engage = st.toggle("🚀 ENGAGE MILL CONVEYOR", value=False)
+    engage = st.toggle("🚀 ENGAGE MILL CAMERAS", value=False)
     
     if st.button("🔄 EMERGENCY RESET", use_container_width=True):
-        for key in ['ptr_idx', 'ptr_x', 'logs', 'f_raw', 'f_viz']:
-            st.session_state[key] = [] if key == 'logs' else 0 if key.startswith('ptr') else None
-        st.session_state.current_idx = -1 # Clear cache
+        st.session_state.img_idx = 0
+        st.session_state.slice_idx = 0
+        st.session_state.logs = []
+        st.session_state.f_raw = None
+        st.session_state.f_viz = None
+        st.session_state.cached_img_idx = -1
         st.rerun()
 
     st.markdown("---")
-    step = st.select_slider("Belt Speed (FPS Offset)", options=[5, 10, 20, 30, 50], value=20)
+    # Map friendly names to actual time.sleep delays in seconds
+    speed_map = {"Slow (2s)": 2.0, "Normal (1s)": 1.0, "Fast (0.5s)": 0.5}
+    speed_choice = st.select_slider("Snapshot Interval", options=list(speed_map.keys()), value="Normal (1s)")
+    frame_delay = speed_map[speed_choice]
     
     status_clr = "#28a745" if engage else "#dc3545"
-    st.markdown(f"Conveyor Status: <b style='color:{status_clr};'>{'RUNNING' if engage else 'STOPPED'}</b>", unsafe_allow_html=True)
+    st.markdown(f"Camera Status: <b style='color:{status_clr};'>{'CAPTURING' if engage else 'STANDBY'}</b>", unsafe_allow_html=True)
 
 # Main Viewports
 col_left, col_right = st.columns(2)
 with col_left:
-    st.markdown("#### 📷 Optical Sensor Feed")
+    st.markdown(f"#### 📷 Optical Feed (Cam {st.session_state.slice_idx + 1}/4)")
     v_raw = st.empty()
 with col_right:
     st.markdown("#### 🔬 Neural Vision Overlay")
@@ -137,7 +146,7 @@ with c_expert:
     wait_time = 60 - time_since_last
     
     if engage:
-        st.info("⏸️ Stop conveyor to analyze surface topology.")
+        st.info("⏸️ Stop cameras to analyze surface topology.")
         st.button("✨ ANALYZE FRAME", disabled=True)
     elif wait_time > 0:
         st.warning(f"Engine cooling... {int(wait_time)}s.")
@@ -157,14 +166,14 @@ with c_expert:
                     except Exception as e:
                         st.error(f"Analysis Error: {str(e)}")
 
-# --- 4. FRAME-BY-FRAME ENGINE (ZERO CHOKE OPTIMIZATION) ---
+# --- 4. SNAPSHOT ENGINE (ROCK SOLID CLOUD STABILITY) ---
 DIR = "test_samples"
 files = sorted([os.path.join(DIR, f) for f in os.listdir(DIR) if f.endswith(('.jpg', '.png'))]) if os.path.exists(DIR) else []
 
 if files and hasattr(manifest, 'TRUTH_DATA'):
-    # 1. Load the strip into memory ONLY if we moved to a new image
-    if st.session_state.current_idx != st.session_state.ptr_idx:
-        path = files[st.session_state.ptr_idx]
+    # 1. Image Caching Layer: Only process the 1600px image if we moved to a new file
+    if st.session_state.cached_img_idx != st.session_state.img_idx:
+        path = files[st.session_state.img_idx]
         filename = os.path.basename(path)
         
         raw_full = cv2.cvtColor(cv2.imread(path), cv2.COLOR_BGR2RGB)
@@ -177,38 +186,42 @@ if files and hasattr(manifest, 'TRUTH_DATA'):
             
         viz_full = generate_inference_overlay(raw_full, inference_preds)
         
-        # Save to session state so we don't calculate this again until the next strip
+        # Save to session state
         st.session_state.raw_full = raw_full
         st.session_state.viz_full = viz_full
         st.session_state.inference_preds = inference_preds
         st.session_state.image_data = image_data
         st.session_state.filename = filename
-        st.session_state.current_idx = st.session_state.ptr_idx
+        st.session_state.cached_img_idx = st.session_state.img_idx
 
-    # 2. Slice the Viewport for the current frame
-    x = st.session_state.ptr_x
-    st.session_state.f_raw = st.session_state.raw_full[:, x : x + 450]
-    st.session_state.f_viz = st.session_state.viz_full[:, x : x + 450]
+    # 2. Extract the current Snapshot Frame
+    x_start = SNAPSHOT_OFFSETS[st.session_state.slice_idx]
+    st.session_state.f_raw = st.session_state.raw_full[:, x_start : x_start + 450]
+    st.session_state.f_viz = st.session_state.viz_full[:, x_start : x_start + 450]
 
-    # 3. Render the frame
+    # 3. Render the Frame (Atomic)
     v_raw.image(st.session_state.f_raw, use_container_width=True)
     v_viz.image(st.session_state.f_viz, use_container_width=True)
 
-    # 4. Process Detection Logs (Class 3 / Red Scratches)
+    # 4. Check for Class 3 Scratches (Index 2) in this specific snapshot
     if "3" in st.session_state.image_data:
-        if np.any(st.session_state.inference_preds[:, x : x + 450, 2] == 1):
+        if np.any(st.session_state.inference_preds[:, x_start : x_start + 450, 2] == 1):
             if not any(l["File"] == st.session_state.filename for l in st.session_state.logs[-1:]):
                 st.session_state.logs.append({"Time": time.strftime("%H:%M:%S"), "File": st.session_state.filename})
                 log_area.table(st.session_state.logs[-5:])
 
-    # 5. Conveyor Logic & Frame Advance
+    # 5. Timer and State Advance Logic
     if engage:
-        st.session_state.ptr_x += step
+        # Pause perfectly so the browser can catch up
+        time.sleep(frame_delay)
         
-        # If we reach the end of the 1600px strip, reset x and move to next image
-        if st.session_state.ptr_x >= 1150:
-            st.session_state.ptr_x = 0
-            st.session_state.ptr_idx = (st.session_state.ptr_idx + 1) % len(files)
+        # Advance to the next camera frame
+        st.session_state.slice_idx += 1
+        
+        # If we passed the 4th frame, reset to frame 1 and load the next strip
+        if st.session_state.slice_idx >= len(SNAPSHOT_OFFSETS):
+            st.session_state.slice_idx = 0
+            st.session_state.img_idx = (st.session_state.img_idx + 1) % len(files)
             
-        time.sleep(0.05) # Yields thread perfectly to Streamlit Cloud
-        st.rerun() # Push exactly one frame and restart
+        # Trigger the next loop
+        st.rerun()
