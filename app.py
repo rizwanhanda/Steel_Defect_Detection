@@ -6,7 +6,6 @@ import time
 import PIL.Image
 import google.generativeai as genai
 import tensorflow as tf
-import keras  # Use standalone keras for Keras 3 models
 
 # --- 1. SYSTEM INITIALIZATION ---
 st.set_page_config(page_title="SteelSight AI | Industrial Dashboard", layout="wide")
@@ -15,7 +14,7 @@ st.set_page_config(page_title="SteelSight AI | Industrial Dashboard", layout="wi
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 gemini_model = genai.GenerativeModel('gemini-1.5-flash')
 
-# --- 2. CUSTOM OBJECTS & VERSION BRIDGE ---
+# --- 2. CUSTOM OBJECTS (Must match your training script exactly) ---
 
 def dice_coef(y_true, y_pred, smooth=1):
     y_true_f = tf.keras.backend.flatten(y_true)
@@ -34,16 +33,14 @@ def focal_loss(gamma=2., alpha=4.0):
 
 @st.cache_resource
 def load_u_net():
-    # The 'Functional' mapping bridges the Keras 3 version gap
+    # In TF 2.16+, custom_objects are handled by the native Keras 3 backend
     custom_objects = {
         'dice_coef': dice_coef,
         'focal_loss_fixed': focal_loss(),
-        'focal_loss': focal_loss(),
-        'Functional': keras.models.Model,
-        'silu': tf.nn.silu  # Ensures the EfficientNet activation is recognized
+        'focal_loss': focal_loss()
     }
-    # Using keras.models.load_model instead of tf.keras for .keras files
-    return keras.models.load_model(
+    # Load using the native TF-Keras bridge
+    return tf.keras.models.load_model(
         'steel_model_best.keras', 
         custom_objects=custom_objects, 
         compile=False
@@ -67,13 +64,13 @@ def apply_glow_overlay(raw_image, mask):
 
 # --- 4. USER INTERFACE ---
 
-st.title("🏭 SteelSight AI: Real-Time Quality Control")
+st.title("🏭 SteelSight AI: Industrial Dashboard")
 st.markdown("---")
 
 col_main, col_log = st.columns([3, 1])
 
 with col_main:
-    st.write("### LIVE FEED: Line 01 (Patiala Mill)")
+    st.write("### LIVE FEED: Line 01")
     view_port = st.empty()
     run_conveyor = st.toggle("Engage Rolling Mill", value=True)
 
@@ -82,7 +79,7 @@ with col_log:
     log_area = st.empty()
     if st.button("Consult AI Expert"):
         if "last_defect_img" in st.session_state:
-            with st.spinner("Gemini is analyzing the surface..."):
+            with st.spinner("Gemini is analyzing..."):
                 raw_img = PIL.Image.open(st.session_state.last_defect_img)
                 response = gemini_model.generate_content([
                     "As a metallurgical expert, look at this steel strip. A defect was detected. What is the root cause?",
@@ -90,45 +87,37 @@ with col_log:
                 ])
                 st.info(response.text)
         else:
-            st.warning("No defects captured for analysis yet.")
+            st.warning("No defects captured yet.")
 
 # --- 5. SIMULATION LOOP ---
 
 SAMPLE_FOLDER = "test_samples"
-# Safety check for the folder
-if not os.path.exists(SAMPLE_FOLDER):
-    st.error(f"Folder '{SAMPLE_FOLDER}' not found. Please ensure it is pushed to GitHub.")
-    st.stop()
-
-files = [os.path.join(SAMPLE_FOLDER, f) for f in os.listdir(SAMPLE_FOLDER) if f.endswith(('.jpg', '.png'))]
-
 if "logs" not in st.session_state:
     st.session_state.logs = []
 
-if run_conveyor and files:
+if run_conveyor and os.path.exists(SAMPLE_FOLDER):
+    files = [os.path.join(SAMPLE_FOLDER, f) for f in os.listdir(SAMPLE_FOLDER) if f.endswith(('.jpg', '.png'))]
     for img_path in files:
         if not run_conveyor: break
         
         img = cv2.imread(img_path)
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        
+        # Prepare for U-Net
         input_data = cv2.resize(img, (1600, 256)) / 255.0
         input_data = np.expand_dims(input_data, axis=0).astype(np.float32)
         
-        # High-speed prediction
+        # Predict
         pred = model.predict(input_data, verbose=0)
         mask = np.argmax(pred[0], axis=-1)
         full_result = apply_glow_overlay(img, mask)
         
-        # Conveyor Effect
-        for x in range(0, 1200, 30):
+        # Sliding window animation
+        for x in range(0, 1200, 40):
             view_port.image(full_result[:, x : x + 400], use_column_width=True)
-            
             if np.any(mask[:, x : x + 400] == 3):
                 st.session_state.last_defect_img = img_path
                 if not any(d["ID"] == os.path.basename(img_path) for d in st.session_state.logs):
                     st.session_state.logs.append({"Time": time.strftime("%H:%M:%S"), "ID": os.path.basename(img_path)})
                 log_area.table(st.session_state.logs[-5:])
-            
             time.sleep(0.05)
-elif not files:
-    st.warning("Waiting for images in test_samples folder...")
