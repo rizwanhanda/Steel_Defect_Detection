@@ -6,6 +6,7 @@ import time
 import PIL.Image
 import google.generativeai as genai
 import tensorflow as tf
+import keras  # Use standalone keras for Keras 3 models
 
 # --- 1. SYSTEM INITIALIZATION ---
 st.set_page_config(page_title="SteelSight AI | Industrial Dashboard", layout="wide")
@@ -14,7 +15,7 @@ st.set_page_config(page_title="SteelSight AI | Industrial Dashboard", layout="wi
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 gemini_model = genai.GenerativeModel('gemini-1.5-flash')
 
-# --- 2. CUSTOM OBJECTS (Fixes the Loading Error) ---
+# --- 2. CUSTOM OBJECTS & VERSION BRIDGE ---
 
 def dice_coef(y_true, y_pred, smooth=1):
     y_true_f = tf.keras.backend.flatten(y_true)
@@ -33,13 +34,16 @@ def focal_loss(gamma=2., alpha=4.0):
 
 @st.cache_resource
 def load_u_net():
-    # We define the keys to match common names used in Severstal training scripts
+    # The 'Functional' mapping bridges the Keras 3 version gap
     custom_objects = {
         'dice_coef': dice_coef,
         'focal_loss_fixed': focal_loss(),
-        'focal_loss': focal_loss()
+        'focal_loss': focal_loss(),
+        'Functional': keras.models.Model,
+        'silu': tf.nn.silu  # Ensures the EfficientNet activation is recognized
     }
-    return tf.keras.models.load_model(
+    # Using keras.models.load_model instead of tf.keras for .keras files
+    return keras.models.load_model(
         'steel_model_best.keras', 
         custom_objects=custom_objects, 
         compile=False
@@ -91,31 +95,34 @@ with col_log:
 # --- 5. SIMULATION LOOP ---
 
 SAMPLE_FOLDER = "test_samples"
+# Safety check for the folder
+if not os.path.exists(SAMPLE_FOLDER):
+    st.error(f"Folder '{SAMPLE_FOLDER}' not found. Please ensure it is pushed to GitHub.")
+    st.stop()
+
 files = [os.path.join(SAMPLE_FOLDER, f) for f in os.listdir(SAMPLE_FOLDER) if f.endswith(('.jpg', '.png'))]
 
 if "logs" not in st.session_state:
     st.session_state.logs = []
 
-if run_conveyor:
+if run_conveyor and files:
     for img_path in files:
         if not run_conveyor: break
         
-        # Pre-process
         img = cv2.imread(img_path)
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         input_data = cv2.resize(img, (1600, 256)) / 255.0
         input_data = np.expand_dims(input_data, axis=0).astype(np.float32)
         
-        # Predict & Overlay
+        # High-speed prediction
         pred = model.predict(input_data, verbose=0)
         mask = np.argmax(pred[0], axis=-1)
         full_result = apply_glow_overlay(img, mask)
         
-        # Slide Window (The Conveyor Effect)
+        # Conveyor Effect
         for x in range(0, 1200, 30):
             view_port.image(full_result[:, x : x + 400], use_column_width=True)
             
-            # Check for Class 3 (Scratches)
             if np.any(mask[:, x : x + 400] == 3):
                 st.session_state.last_defect_img = img_path
                 if not any(d["ID"] == os.path.basename(img_path) for d in st.session_state.logs):
@@ -123,3 +130,5 @@ if run_conveyor:
                 log_area.table(st.session_state.logs[-5:])
             
             time.sleep(0.05)
+elif not files:
+    st.warning("Waiting for images in test_samples folder...")
