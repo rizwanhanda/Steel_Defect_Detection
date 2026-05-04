@@ -11,19 +11,33 @@ import keras
 # --- 1. SYSTEM INITIALIZATION ---
 st.set_page_config(page_title="SteelSight AI | Industrial Dashboard", layout="wide")
 
-# Persistent State Management
+# CSS to fix the "small toggle" and add industrial styling
+st.markdown("""
+    <style>
+    /* Scale up the toggle switch */
+    [data-testid="stCheckbox"] { transform: scale(1.5); padding-left: 20px; }
+    .stToggle { margin-top: 10px; margin-bottom: 20px; }
+    
+    /* Industrial containers */
+    .viewport-box { border: 2px solid #343a40; border-radius: 10px; padding: 15px; background-color: #1a1c23; }
+    .stButton>button { height: 4em; font-size: 18px; font-weight: bold; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# State Persistence
 if 'ptr_idx' not in st.session_state: st.session_state.ptr_idx = 0
 if 'ptr_x' not in st.session_state: st.session_state.ptr_x = 0
 if 'logs' not in st.session_state: st.session_state.logs = []
 if 'freeze_raw' not in st.session_state: st.session_state.freeze_raw = None
 if 'freeze_viz' not in st.session_state: st.session_state.freeze_viz = None
 
-# Gemini Setup - Standard Model ID
+# Gemini Initialization - Explicit Model Prefix
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+    # Using 'models/' prefix to resolve v1beta 404 errors
+    gemini_model = genai.GenerativeModel('models/gemini-1.5-flash')
 except Exception:
-    st.sidebar.error("Gemini API Configuration Error.")
+    st.sidebar.error("Gemini API connection failed.")
 
 # --- 2. AI BACKBONE ---
 
@@ -44,16 +58,16 @@ def load_mill_model():
 
 model = load_mill_model()
 
-# --- 3. UI LAYOUT: SIDEBAR & HEADERS ---
+# --- 3. UI LAYOUT ---
 
-st.title("🏗️ SteelSight AI: Industrial Control Room")
-st.caption("Advanced Surface Inspection System | Thapar Institute of Engineering & Technology")
+st.title("🏭 SteelSight AI: Industrial Control Room")
+st.caption("Mill Line 01 | Thapar Institute of Engineering & Technology")
 st.markdown("---")
 
 with st.sidebar:
-    st.header("🎮 Line Control")
-    # Toggle switch provides a cleaner "Engaged" state than buttons
-    engage_system = st.toggle("🚀 ENGAGE ROLLING MILL", value=False)
+    st.header("🕹️ Station Controls")
+    # Big toggle for Engaging the system
+    is_running = st.toggle("🚀 ENGAGE MILL CONVEYOR", value=False)
     
     if st.button("🔄 EMERGENCY RESET", use_container_width=True):
         st.session_state.ptr_idx = 0
@@ -64,116 +78,108 @@ with st.sidebar:
         st.rerun()
 
     st.markdown("---")
-    belt_speed = st.select_slider("Mill Speed (Pixels/Step)", options=[5, 10, 15, 20, 25, 30], value=15)
+    step_size = st.select_slider("Conveyor Step Size (px)", options=[5, 10, 20, 30, 40], value=15)
     
-    status_text = "RUNNING" if engage_system else "HALTED"
-    status_color = "#28a745" if engage_system else "#dc3545"
-    st.markdown(f"Status: <span style='color:{status_color}; font-weight:bold;'>{status_text}</span>", unsafe_allow_html=True)
+    st.markdown(f"**Current Status:** {'🟢 RUNNING' if is_running else '🔴 HALTED'}")
 
-# Main Viewports
-col_raw, col_viz = st.columns(2)
-with col_raw:
-    st.markdown("#### 📷 Optical Sensor: Raw Surface")
-    raw_view = st.empty()
-with col_viz:
-    st.markdown("#### 🔬 AI Vision: Defect Overlay")
-    viz_view = st.empty()
+# Dual Visualizer Section
+col_left, col_right = st.columns(2)
+with col_left:
+    st.markdown("#### 📷 Optical Feed")
+    raw_viewport = st.empty()
+with col_right:
+    st.markdown("#### 🔬 AI Vision")
+    viz_viewport = st.empty()
 
-# Persistence: Show the last frame even when halted
-if not engage_system and st.session_state.freeze_raw is not None:
-    raw_view.image(st.session_state.freeze_raw, use_container_width=True)
-    viz_view.image(st.session_state.freeze_viz, use_container_width=True)
+# Persistent Render for Halt/Idle
+if not is_running and st.session_state.freeze_raw is not None:
+    raw_viewport.image(st.session_state.freeze_raw, use_container_width=True)
+    viz_viewport.image(st.session_state.freeze_viz, use_container_width=True)
 
-# Lower Dashboard
 st.markdown("---")
 col_log, col_expert = st.columns([1, 2])
 
 with col_log:
-    st.subheader("📋 Detection History")
+    st.subheader("📋 System Logs")
     log_area = st.empty()
     if st.session_state.logs:
         log_area.table(st.session_state.logs[-5:])
 
 with col_expert:
-    st.subheader("🤖 AI Expert Analysis")
-    if st.button("✨ ANALYZE FROZEN FRAME", use_container_width=True):
+    st.subheader("🤖 Root Cause Analysis")
+    if st.button("✨ ANALYZE FROZEN FRAME WITH GEMINI", use_container_width=True):
         if st.session_state.freeze_raw is not None:
-            with st.spinner("Consulting Metallurgical Expert..."):
+            with st.spinner("Analyzing surface topology..."):
                 try:
-                    analysis_pil = PIL.Image.fromarray(st.session_state.freeze_raw)
-                    response = gemini_model.generate_content([
-                        "Act as a Senior Metallurgy Engineer. This is a steel surface image from the Patiala mill line. "
-                        "Identify the defect present and provide the likely root cause and machine fix.", 
-                        analysis_pil
-                    ])
+                    # Convert frozen array to PIL for Gemini
+                    pil_img = PIL.Image.fromarray(st.session_state.freeze_raw)
+                    prompt = "Act as an industrial metallurgy expert. Identify any defects in this steel image and suggest the machinery fix."
+                    response = gemini_model.generate_content([prompt, pil_img])
+                    st.success("Analysis Complete")
                     st.info(response.text)
                 except Exception as e:
                     st.error(f"Gemini API Error: {str(e)}")
         else:
-            st.warning("Engage the mill and pause on a defect to perform analysis.")
+            st.warning("Stop the conveyor on a defect to run AI analysis.")
 
-# --- 4. THE PROCESSING ENGINE ---
+# --- 4. ENGINE & ANIMATION ---
 
 SAMPLE_DIR = "test_samples"
-# Fixed the variable name typo here:
-files = sorted([os.path.join(SAMPLE_DIR, f) for f in os.listdir(SAMPLE_DIR) if f.endswith(('.jpg', '.png'))]) if os.path.exists(SAMPLE_DIR) else []
+files = sorted([os.path.join(SAMPLE_DIR, f) for f in os.listdir(SAMPLE_DIR) if f.endswith(('.jpg', '.png'))])
 
-def build_vision_overlay(image, probs):
-    """Blends mask onto image: 1:Cyan, 2:Yellow, 3:Red, 4:Magenta."""
-    mask = np.argmax(probs, axis=-1)
-    max_prob = np.max(probs, axis=-1)
-    
+def generate_overlay(image, preds):
+    """Syncs mask mapping to industrial standards."""
+    mask = np.argmax(preds, axis=-1)
+    conf = np.max(preds, axis=-1)
     overlay = np.zeros_like(image)
-    # Mapping probabilities to high-contrast colors
+    # Colors: 1:Cyan, 2:Yellow, 3:Red (Critical), 4:Magenta
     palette = {0: [0, 255, 255], 1: [255, 255, 0], 2: [255, 0, 0], 3: [255, 0, 255]}
-    
     for cid, color in palette.items():
-        # Confidence thresholding keeps the "Yellow Flood" away
-        overlay[(mask == cid) & (max_prob > 0.5)] = color
-        
+        overlay[(mask == cid) & (conf > 0.5)] = color
     return cv2.addWeighted(image, 0.7, overlay, 0.3, 0)
 
-# The Main Animation Loop
-if engage_system and files:
+# The Main Processing Loop
+if is_running and files:
     while st.session_state.ptr_idx < len(files):
         img_path = files[st.session_state.ptr_idx]
         
-        # Load once per strip
+        # Strip Processing
         raw_bgr = cv2.imread(img_path)
         raw_rgb = cv2.cvtColor(raw_bgr, cv2.COLOR_BGR2RGB)
         
-        # Inference (passing raw 0-255 values to internal Rescaling layer)
+        # Inference
         input_data = cv2.resize(raw_rgb, (1600, 256))
+        # Note: Model includes internal rescaling logic
         input_data = np.expand_dims(input_data, axis=0).astype(np.float32)
         
-        preds = model.predict(input_data, verbose=0)[0]
-        full_viz_strip = build_vision_overlay(raw_rgb, preds)
+        pred_probs = model.predict(input_data, verbose=0)[0]
+        full_viz_strip = generate_overlay(raw_rgb, pred_probs)
         
-        # Sliding Window
+        # Sliding Window Animation
         win_w = 450
-        for x in range(st.session_state.ptr_x, 1600 - win_w, belt_speed):
-            # Break if user toggles off
-            if not engage_system:
-                st.session_state.ptr_x = x # Save position
+        for x in range(st.session_state.ptr_x, 1600 - win_w, step_size):
+            if not is_running:
+                st.session_state.ptr_x = x # Save position for Resume
                 st.rerun()
 
-            # Store current slice for persistence
+            # Update the freeze-frame state immediately
             st.session_state.freeze_raw = raw_rgb[:, x : x + win_w]
             st.session_state.freeze_viz = full_viz_strip[:, x : x + win_w]
             
-            # Sync Render
-            raw_view.image(st.session_state.freeze_raw, use_container_width=True)
-            viz_view.image(st.session_state.freeze_viz, use_container_width=True)
+            # Synchronized UI Update
+            raw_viewport.image(st.session_state.freeze_raw, use_container_width=True)
+            viz_viewport.image(st.session_state.freeze_viz, use_container_width=True)
             
-            # Log Critical Defect (Class 3: Scratches)
-            if np.any((np.argmax(preds[:, x : x + win_w], axis=-1) == 2) & (np.max(preds[:, x : x + win_w], axis=-1) > 0.6)):
-                entry = {"Time": time.strftime("%H:%M:%S"), "ID": os.path.basename(img_path)}
-                if not any(l["ID"] == entry["ID"] for l in st.session_state.logs[-1:]):
+            # Log Detection (Class 3: Scratches)
+            if np.any((np.argmax(pred_probs[:, x : x + win_w], axis=-1) == 2) & (np.max(pred_probs[:, x : x + win_w], axis=-1) > 0.6)):
+                entry = {"Time": time.strftime("%H:%M:%S"), "File": os.path.basename(img_path)}
+                if not any(l["File"] == entry["File"] for l in st.session_state.logs[-1:]):
                     st.session_state.logs.append(entry)
                 log_area.table(st.session_state.logs[-5:])
 
             time.sleep(0.01)
             
+        # Reset for next image strip
         st.session_state.ptr_idx += 1
         st.session_state.ptr_x = 0
         if st.session_state.ptr_idx >= len(files): st.session_state.ptr_idx = 0
