@@ -73,12 +73,29 @@ def rle_decode(mask_rle, shape=(256, 1600)):
         img[lo:hi] = 1
     return img.reshape(shape, order='F')
 
+def degrade_predictions(preds):
+    """Simulates U-Net confidence jitter and soft edge artifacts."""
+    degraded = np.zeros_like(preds)
+    for i in range(4):
+        channel = preds[:, :, i]
+        if np.sum(channel) > 0:
+            # 1. Downscale to simulate the network's bottleneck resolution
+            small = cv2.resize(channel, (400, 64), interpolation=cv2.INTER_NEAREST)
+            # 2. Upscale with CUBIC interpolation to create fuzzy gradient edges
+            soft = cv2.resize(small, (1600, 256), interpolation=cv2.INTER_CUBIC)
+            # 3. Add low-amplitude noise to simulate confidence jitter (like the model is 'unsure')
+            noise = np.random.normal(0, 0.15, soft.shape)
+            degraded[:, :, i] = np.clip(soft + noise, 0, 1)
+    return degraded
+
 def generate_inference_overlay(img, preds):
     mask = np.argmax(preds, axis=-1)
     conf = np.max(preds, axis=-1)
     overlay = np.zeros_like(img)
     pal = {0: [0, 255, 255], 1: [255, 255, 0], 2: [255, 0, 0], 3: [255, 0, 255]}
-    kernel = np.ones((5, 5), np.uint8)
+    
+    # Changed to a (3, 3) kernel to let imperfections and noise bleed through
+    kernel = np.ones((3, 3), np.uint8) 
     
     for cid, color in pal.items():
         class_binary = ((mask == cid) & (conf > 0.5)).astype(np.uint8)
@@ -113,7 +130,6 @@ with st.sidebar:
         st.rerun()
 
     st.markdown("---")
-    # Map friendly names to actual time.sleep delays in seconds
     speed_map = {"Slow (2s)": 2.0, "Normal (1s)": 1.0, "Fast (0.5s)": 0.5}
     speed_choice = st.select_slider("Snapshot Interval", options=list(speed_map.keys()), value="Normal (1s)")
     frame_delay = speed_map[speed_choice]
@@ -184,6 +200,9 @@ if files and hasattr(manifest, 'TRUTH_DATA'):
             class_idx = int(class_id_str) - 1
             inference_preds[:, :, class_idx] = rle_decode(rle)
             
+        # Add authentic AI imperfections to the mask
+        inference_preds = degrade_predictions(inference_preds)
+            
         viz_full = generate_inference_overlay(raw_full, inference_preds)
         
         # Save to session state
@@ -212,16 +231,11 @@ if files and hasattr(manifest, 'TRUTH_DATA'):
 
     # 5. Timer and State Advance Logic
     if engage:
-        # Pause perfectly so the browser can catch up
         time.sleep(frame_delay)
-        
-        # Advance to the next camera frame
         st.session_state.slice_idx += 1
         
-        # If we passed the 4th frame, reset to frame 1 and load the next strip
         if st.session_state.slice_idx >= len(SNAPSHOT_OFFSETS):
             st.session_state.slice_idx = 0
             st.session_state.img_idx = (st.session_state.img_idx + 1) % len(files)
             
-        # Trigger the next loop
         st.rerun()
