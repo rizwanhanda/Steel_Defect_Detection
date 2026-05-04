@@ -4,13 +4,36 @@ import cv2
 import os
 import time
 import PIL.Image
-import google.generativeai as genai
-from google.api_core import exceptions
+from google import genai  # Migrated to new SDK
 import tensorflow as tf
 import keras
 
-# --- 1. SYSTEM CONFIG ---
-st.set_page_config(page_title="SteelSight AI | Demo Stable", layout="wide")
+# --- 1. SYSTEM CONFIG & UI POLISH ---
+st.set_page_config(page_title="SteelSight AI | Industrial Hub", layout="wide")
+
+st.markdown("""
+    <style>
+    /* Bigger, Pro-Level Toggle */
+    [data-testid="stCheckbox"] { transform: scale(1.5); margin-left: 20px; }
+    .stApp { background-color: #0E1117; color: #FFFFFF; }
+    
+    /* Highlight the Analysis Result */
+    .expert-response { 
+        background-color: #161b22; 
+        border-left: 5px solid #238636; 
+        padding: 15px; 
+        border-radius: 0 5px 5px 0;
+        margin-top: 10px;
+    }
+    
+    .stButton>button { 
+        height: 3.5em; 
+        font-weight: bold; 
+        background-color: #238636; 
+        color: white;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
 # Persistent State
 if 'ptr_idx' not in st.session_state: st.session_state.ptr_idx = 0
@@ -20,18 +43,18 @@ if 'f_raw' not in st.session_state: st.session_state.f_raw = None
 if 'f_viz' not in st.session_state: st.session_state.f_viz = None
 if 'last_ai_time' not in st.session_state: st.session_state.last_ai_time = 0
 
-# --- 2. THE AI BACKBONE (REDUCED QUOTA USAGE) ---
+# --- 2. THE AI BACKBONE ---
 
 @st.cache_resource
-def get_gemini_model():
+def get_genai_client():
+    """Initializes the modern Gemini 3 client."""
     try:
-        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-        # HARD-PINNED: We remove the list_models() loop to save quota
-        return genai.GenerativeModel('gemini-1.5-flash')
-    except Exception as e:
+        return genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+    except Exception:
         return None
 
-gemini_model = get_gemini_model()
+client = get_genai_client()
+MODEL_ID = "gemini-3-flash-preview" # Using Gemini 3 Flash
 
 @st.cache_resource
 def load_mill_model():
@@ -54,21 +77,30 @@ with st.sidebar:
     st.header("🕹️ Station Controls")
     engage = st.toggle("🚀 ENGAGE MILL CONVEYOR", value=False)
     
-    if st.button("🔄 EMERGENCY RESET"):
+    if st.button("🔄 EMERGENCY RESET", use_container_width=True):
         st.session_state.ptr_idx = 0
         st.session_state.ptr_x = 0
         st.session_state.logs = []
+        st.session_state.f_raw = None
+        st.session_state.f_viz = None
         st.rerun()
 
-    step = st.select_slider("Speed", options=[5, 10, 20, 30], value=10)
+    st.markdown("---")
+    step = st.select_slider("Speed (Step Size)", options=[5, 10, 20, 30], value=10)
+    
+    status_clr = "#28a745" if engage else "#dc3545"
+    st.markdown(f"Status: <b style='color:{status_clr};'>{'RUNNING' if engage else 'HALTED'}</b>", unsafe_allow_html=True)
 
+# Viewport Logic
 col_left, col_right = st.columns(2)
 with col_left:
+    st.markdown("#### 📷 Optical Sensor")
     v_raw = st.empty()
 with col_right:
+    st.markdown("#### 🔬 AI Vision")
     v_viz = st.empty()
 
-# Persistent Render
+# Persistent Render (Keeps frame on screen when halted)
 if not engage and st.session_state.f_raw is not None:
     v_raw.image(st.session_state.f_raw, use_container_width=True)
     v_viz.image(st.session_state.f_viz, use_container_width=True)
@@ -78,39 +110,44 @@ c_log, c_expert = st.columns([1, 2])
 
 with c_log:
     st.subheader("📋 Detection Log")
+    log_area = st.empty()
     if st.session_state.logs:
-        st.table(st.session_state.logs[-5:])
+        log_area.table(st.session_state.logs[-5:])
 
 with c_expert:
     st.subheader("🤖 AI Expert Analysis")
     
-    # RATE LIMIT UI: 60-second lockout
+    # Rate Limit UI
     time_since_last = time.time() - st.session_state.last_ai_time
     wait_time = 60 - time_since_last
     
     if engage:
-        st.info("⏸️ Halt the conveyor to enable AI Expert analysis.")
+        st.info("⏸️ Halt the conveyor to enable Gemini 3 analysis.")
         st.button("✨ ANALYZE FRAME", disabled=True)
     elif wait_time > 0:
         st.warning(f"Quota cooling down... {int(wait_time)}s remaining.")
         st.button("✨ ANALYZE FRAME", disabled=True)
     else:
         if st.button("✨ ANALYZE FRAME", use_container_width=True):
-            if st.session_state.f_raw is not None:
+            if st.session_state.f_raw is not None and client:
                 st.session_state.last_ai_time = time.time()
-                with st.spinner("Consulting Specialist..."):
+                with st.spinner("Gemini 3 Flash is inspecting surface topology..."):
                     try:
                         img_pil = PIL.Image.fromarray(st.session_state.f_raw)
-                        response = gemini_model.generate_content([
-                            "Act as a metallurgy expert. Identify defects in this steel strip and suggest a machinery fix.", 
-                            img_pil
-                        ])
+                        # New SDK Generate Content call
+                        response = client.models.generate_content(
+                            model=MODEL_ID,
+                            contents=[
+                                "Act as a metallurgy expert. Identify defects in this steel strip and suggest a machinery fix.", 
+                                img_pil
+                            ]
+                        )
                         st.success("Analysis Delivered")
-                        st.write(response.text)
-                    except exceptions.ResourceExhausted:
-                        st.error("Google Quota Hit. Please wait 60s.")
+                        st.markdown(f"<div class='expert-response'>{response.text}</div>", unsafe_allow_html=True)
                     except Exception as e:
-                        st.error(f"Error: {str(e)}")
+                        st.error(f"Gemini 3 Error: {str(e)}")
+            else:
+                st.warning("Ensure conveyor is stopped on a defect.")
 
 # --- 4. ENGINE ---
 DIR = "test_samples"
@@ -135,7 +172,7 @@ if engage and files:
             overlay[(mask == cid) & (conf > 0.5)] = color
         full_viz = cv2.addWeighted(raw_rgb, 0.7, overlay, 0.3, 0)
         
-        # Sliding
+        # Sliding Window
         for x in range(st.session_state.ptr_x, 1150, step):
             if not engage:
                 st.session_state.ptr_x = x
@@ -144,13 +181,15 @@ if engage and files:
             st.session_state.f_raw = raw_rgb[:, x : x + 450]
             st.session_state.f_viz = full_viz[:, x : x + 450]
             
+            # Atomic update to avoid lag
             v_raw.image(st.session_state.f_raw, use_container_width=True)
             v_viz.image(st.session_state.f_viz, use_container_width=True)
             
-            # Log Red Scratches
+            # Log Red Scratches (Class 3)
             if np.any((np.argmax(preds[:, x:x+450], axis=-1) == 2) & (np.max(preds[:, x:x+450], axis=-1) > 0.6)):
                 if not any(l["File"] == os.path.basename(path) for l in st.session_state.logs[-1:]):
                     st.session_state.logs.append({"Time": time.strftime("%H:%M:%S"), "File": os.path.basename(path)})
+                log_area.table(st.session_state.logs[-5:])
             
             time.sleep(0.01)
 

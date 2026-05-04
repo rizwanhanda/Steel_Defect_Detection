@@ -1,6 +1,6 @@
+google-genai
 streamlit
-tensorflow-cpu>=2.16.1
+tensorflow-cpu
 opencv-python-headless
 numpy<2.0.0
 Pillow
-google-generativeai
