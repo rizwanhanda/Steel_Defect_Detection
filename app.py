@@ -35,7 +35,22 @@ st.markdown("""
     .stButton>button:hover { background-color: #2ea043; border-color: #3fb950; }
     
     /* Fixed height containers to prevent the 'shaky line' UI collapse */
-    [data-testid="stImage"] { min-height: 200px; object-fit: contain; background-color: #111; }
+    [data-testid="stImage"] { min-height: 200px; object-fit: contain; background-color: #111; border-radius: 4px; }
+    
+    .legend-container {
+        display: flex; 
+        flex-wrap: wrap; 
+        justify-content: space-between; 
+        background-color: #161b22; 
+        padding: 15px 20px; 
+        border-radius: 8px; 
+        border: 1px solid #30363d; 
+        margin-top: 10px; 
+        margin-bottom: 20px;
+        font-size: 0.9em;
+    }
+    .legend-item { flex: 1; min-width: 200px; margin: 5px 0; }
+    .legend-desc { color: #8b949e; font-size: 0.85em; display: block; margin-top: 3px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -146,7 +161,28 @@ with col_right:
     st.markdown("#### 🔬 Neural Vision Overlay")
     v_viz = st.empty()
 
-st.markdown("---")
+# --- DEFECT LEGEND ---
+st.markdown("""
+    <div class="legend-container">
+        <div class="legend-item">
+            <span style="color: #00FFFF; text-shadow: 0 0 5px #00FFFF;">██</span> <b>Class 1: Pitted Surface</b>
+            <span class="legend-desc">Clustered dots/pockmarks from localized corrosion or uneven rolling pressure.</span>
+        </div>
+        <div class="legend-item">
+            <span style="color: #FFFF00; text-shadow: 0 0 5px #FFFF00;">██</span> <b>Class 2: Inclusion / Scab</b>
+            <span class="legend-desc">Raised bumps caused by dirt or foreign material rolled into the steel.</span>
+        </div>
+        <div class="legend-item">
+            <span style="color: #FF0000; text-shadow: 0 0 5px #FF0000;">██</span> <b>Class 3: Scratch / Gouge</b>
+            <span class="legend-desc">Linear mechanical damage from dragging against sharp edges or rollers.</span>
+        </div>
+        <div class="legend-item">
+            <span style="color: #FF00FF; text-shadow: 0 0 5px #FF00FF;">██</span> <b>Class 4: Rolled-in Scale</b>
+            <span class="legend-desc">Dark, irregular patches of oxidized rust permanently crushed into the surface.</span>
+        </div>
+    </div>
+""", unsafe_allow_html=True)
+
 c_log, c_expert = st.columns([1, 2])
 
 with c_log:
